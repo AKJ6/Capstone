@@ -1,0 +1,28 @@
+# YOLO dataset configuration
+
+train: train
+val: train
+
+nc: 20  # number of classes
+
+names:
+  0: Almond
+  1: Apple
+  2: Banana
+  3: Bell Peper
+  4: Carrot
+  5: Chicken
+  6: Egg
+  7: Garlic clove
+  8: Ginger
+  9: Grape
+  10: Guava
+  11: Knife
+  12: Onion
+  13: Orange
+  14: Pasta
+  15: Pear
+  16: Potato
+  17: Rice
+  18: Strawberry
+  19: Tomato
