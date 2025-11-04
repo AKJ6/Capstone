@@ -1,505 +1,479 @@
-import pandas as pd
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GPT2LMHeadModel, GPT2Tokenizer
-from sentence_transformers import SentenceTransformer
-import faiss
-import os
+import argparse
 import json
-import numpy as np
-from typing import List, Dict, Any, Optional
+import os
+import sys
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+import csv
 import re
 
-class RecipeRAG:
-    def __init__(self, 
-                 dataset_path: str = "capstone 71/ouutput.csv",
-                 embedding_model: str = "all-MiniLM-L6-v2",
-                 generation_model: str = None,  # Set to None by default
-                 device: Optional[str] = None):
-        """
-        Initialize the Recipe RAG system
-        
-        Args:
-            dataset_path: Path to the recipe dataset CSV
-            embedding_model: Model to use for embeddings
-            generation_model: Model to use for text generation
-            device: Device to use (cuda or cpu)
-        """
-        # Set device
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-        
-        print(f"Using device: {self.device}")
-        
-        # Load dataset
-        print("Loading dataset...")
-        self.df = pd.read_csv(dataset_path)
-        
-        # Clean dataset
-        self.df = self.clean_dataset(self.df)
-        
-        # Load embedding model
-        print("Loading embedding model...")
-        self.embedder = SentenceTransformer(embedding_model)
-        self.embedder.to(self.device)
-        
-        # Load generation model
-        print("Loading generation model...")
-        
-        # Define model paths to try
-        model_paths = [
-            # Try the passed model path first
-            generation_model,
-            # Then try common local paths
-            "capstone 71/gpt2-recipes",
-            "capstone 71/capstone 71/gpt2-recipes",
-            os.path.join(os.getcwd(), "capstone 71/gpt2-recipes"),
-            os.path.join(os.getcwd(), "capstone 71/capstone 71/gpt2-recipes"),
-            "C:/Users/apeks/Downloads/capstone 71/capstone 71/gpt2-recipes",
-        ]
-        
-        # Filter out None values
-        model_paths = [path for path in model_paths if path is not None]
-        
-        # Try to load from each path
-        model_loaded = False
-        for path in model_paths:
-            if os.path.isdir(path):
-                print(f"Trying to load model from: {path}")
-                try:
-                    self.tokenizer = GPT2Tokenizer.from_pretrained(path)
-                    self.model = GPT2LMHeadModel.from_pretrained(path)
-                    print(f"Successfully loaded model from {path}")
-                    model_loaded = True
-                    break
-                except Exception as e:
-                    print(f"Error loading model from {path}. Error: {e}")
-        
-        # Fall back to default gpt2 if no local model is found
-        if not model_loaded:
-            print("Falling back to default gpt2 model...")
-            self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-            self.model = GPT2LMHeadModel.from_pretrained("gpt2")
-            
-        self.model.to(self.device)
-        self.model.eval()
-        
-        # Set padding token
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        # Create vector index
-        print("Creating vector index...")
-        self.create_index()
-    
-    def clean_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and prepare the dataset"""
-        # Fill NA values
-        for col in ['TranslatedIngredients', 'Cuisine', 'Dietary Preference']:
-            if col in df.columns:
-                df[col] = df[col].fillna("")
-        
-        # Create combined text for embedding
-        df["combined"] = df["TranslatedIngredients"].astype(str) + " " + \
-                        df["Cuisine"].astype(str) + " " + \
-                        df["Dietary Preference"].astype(str)
-        
-        return df
-    
-    def create_index(self):
-        """Create FAISS index for fast similarity search"""
-        # Create embeddings
-        print("Creating embeddings...")
-        corpus_embeddings = self.embedder.encode(
-            self.df["combined"].tolist(), 
-            convert_to_numpy=True, 
-            show_progress_bar=True,
-            device=self.device
-        )
-        
-        # Create FAISS index
-        dimension = corpus_embeddings.shape[1]
-        self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(corpus_embeddings)
-        
-        print(f"Index created with {self.index.ntotal} vectors of dimension {dimension}")
-    
-    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Retrieve relevant recipes based on query
-        
-        Args:
-            query: User query
-            top_k: Number of recipes to retrieve
-            
-        Returns:
-            List of retrieved recipes
-        """
-        # Encode query
-        query_embedding = self.embedder.encode([query], convert_to_numpy=True, device=self.device)
-        
-        # Search in FAISS index
-        distances, indices = self.index.search(query_embedding, top_k)
-        
-        # Get relevant recipes
-        retrieved_recipes = []
-        for i, idx in enumerate(indices[0]):
-            recipe = self.df.iloc[idx].to_dict()
-            recipe['relevance_score'] = float(1 / (1 + distances[0][i]))  # Convert distance to score
-            retrieved_recipes.append(recipe)
-        
-        return retrieved_recipes
-    
-    def generate(self, 
-                 dietary_pref: str, 
-                 ingredients: str, 
-                 cuisine: str, 
-                 top_k: int = 5, 
-                 max_length: int = 800,
-                 temperature: float = 0.7) -> str:
-        """
-        Generate a recipe using RAG
-        
-        Args:
-            dietary_pref: Dietary preference (e.g., Vegan, Vegetarian)
-            ingredients: Comma-separated list of ingredients
-            cuisine: Type of cuisine
-            top_k: Number of recipes to retrieve
-            max_length: Maximum length of generated recipe
-            temperature: Sampling temperature
-            
-        Returns:
-            Generated recipe
-        """
-        try:
-            # Create query
-            query = f"{ingredients} {cuisine} {dietary_pref}"
-            
-            # Retrieve similar recipes
-            retrieved_recipes = self.retrieve(query, top_k)
-            
-            # Create a detailed but concise prompt with clear structure expectations
-            prompt = f"Write a complete {dietary_pref} {cuisine} recipe using these ingredients: {ingredients}.\n\n"
-            prompt += "Format the recipe as follows:\n"
-            prompt += "1. Recipe title\n"
-            prompt += "2. List of all ingredients with quantities\n"
-            prompt += "3. Numbered step-by-step cooking instructions\n\n"
-            
-            # Add example structure to guide the generation
-            prompt += "Example structure (but create a different recipe):\n\n"
-            prompt += "# Spicy Tomato Curry\n\n"
-            prompt += "## Ingredients\n"
-            prompt += "- 2 cups spinach, chopped\n"
-            prompt += "- 3 tomatoes, diced\n"
-            prompt += "- 4 cloves garlic, minced\n"
-            prompt += "- 1 tbsp olive oil\n"
-            prompt += "- 1 tsp cumin\n"
-            prompt += "- Salt to taste\n\n"
-            prompt += "## Instructions\n"
-            prompt += "1. Heat oil in a pan over medium heat\n"
-            prompt += "2. Add garlic and sauté until fragrant\n"
-            prompt += "3. Add tomatoes and cook for 5 minutes\n"
-            prompt += "4. Add spices and stir\n"
-            prompt += "5. Add spinach and cook until wilted\n"
-            prompt += "6. Serve hot\n\n"
-            
-            prompt += "Now create a complete, original recipe using the ingredients provided:\n\n"
-            
-            # Tokenize with truncation to avoid exceeding the model's context length
-            input_ids = self.tokenizer.encode(
-                prompt, 
-                return_tensors="pt", 
-                truncation=True, 
-                max_length=512  # Longer context to accommodate the prompt
-            ).to(self.device)
-            
-            # Generate text with proper attention mask
-            attention_mask = torch.ones_like(input_ids)
-            
-            # Generate with smaller output size
-            with torch.no_grad():
-                output = self.model.generate(
-                    input_ids,
-                    attention_mask=attention_mask,
-                    max_new_tokens=500,  # Longer generation for complete recipe
-                    do_sample=True,
-                    temperature=temperature,
-                    top_k=50,
-                    top_p=0.95,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    repetition_penalty=1.2  # Avoid repetition
-                )
-            
-            # Decode
-            generated_text = self.tokenizer.decode(output[0], skip_special_tokens=True)
-            
-            # Extract the generated recipe (remove the prompt part)
-            recipe_text = generated_text[len(prompt):].strip()
-            
-            # Post-process to ensure we have a complete recipe
-            recipe_text = self.post_process_recipe(recipe_text, ingredients, cuisine, dietary_pref)
-                
-            return recipe_text
-            
-        except Exception as e:
-            print(f"Error during generation: {e}")
-            # Fallback recipe generation
-            return self.generate_fallback_recipe(dietary_pref, ingredients, cuisine)
-    
-    def post_process_recipe(self, recipe_text, ingredients, cuisine, dietary_pref):
-        """Clean up and enhance the generated recipe if needed"""
-        # Check if we have a title, ingredients and instructions
-        has_title = "#" in recipe_text or "Title:" in recipe_text
-        has_ingredients = "## Ingredients" in recipe_text or "Ingredients:" in recipe_text
-        has_instructions = "## Instructions" in recipe_text or "Instructions:" in recipe_text
-        
-        # If missing major sections, regenerate with template
-        if not (has_title and has_ingredients and has_instructions):
-            print("Missing sections in recipe, applying template...")
-            
-            # Extract any useful content that was generated
-            lines = recipe_text.split('\n')
-            instructions = []
-            for line in lines:
-                # Look for numbered instructions or steps
-                if re.match(r'^\d+\.?\s+\S+', line):
-                    instructions.append(line)
-            
-            # If we found instructions, use them, otherwise start from scratch
-            if not instructions:
-                return self.generate_fallback_recipe(dietary_pref, ingredients, cuisine)
-            
-            # Build a structured recipe using what we have
-            ingredient_list = [ing.strip() for ing in ingredients.split(",")]
-            
-            # Create structured output
-            processed_recipe = f"# {cuisine.title()} {dietary_pref} with {ingredient_list[0].title()}\n\n"
-            processed_recipe += "## Ingredients\n"
-            
-            # Add quantities to ingredients
-            for ing in ingredient_list:
-                quantity = "1 cup" if "spinach" in ing or "rice" in ing else "2-3"
-                processed_recipe += f"- {quantity} {ing}\n"
-            
-            # Add basic spices based on cuisine
-            if "Indian" in cuisine:
-                processed_recipe += "- 1 tsp cumin\n"
-                processed_recipe += "- 1/2 tsp turmeric\n"
-                processed_recipe += "- 1 tsp garam masala\n"
-            elif "Italian" in cuisine:
-                processed_recipe += "- 1 tsp dried oregano\n"
-                processed_recipe += "- 1 tsp dried basil\n"
-            
-            processed_recipe += "- Salt to taste\n"
-            processed_recipe += "- 2 tbsp cooking oil\n\n"
-            
-            # Add instructions
-            processed_recipe += "## Instructions\n"
-            for i, instruction in enumerate(instructions):
-                # Clean up the instruction format
-                instruction = re.sub(r'^\d+\.?\s*', '', instruction)
-                processed_recipe += f"{i+1}. {instruction}\n"
-            
-            return processed_recipe
-        
-        return recipe_text
-    
-    def generate_fallback_recipe(self, dietary_pref: str, ingredients: str, cuisine: str) -> str:
-        """Generate a fallback recipe when the model fails"""
-        print("Using fallback recipe generation...")
-        fallback = f"# {cuisine.title()} {dietary_pref} Recipe\n\n"
-        fallback += f"## Ingredients\n"
-        
-        # Format the ingredients list with quantities
-        ingredient_list = [ing.strip() for ing in ingredients.split(",")]
-        for ing in ingredient_list:
-            # Add sensible quantities based on ingredient type
-            if "spinach" in ing.lower():
-                fallback += f"- 2 cups {ing}\n"
-            elif "tomato" in ing.lower():
-                fallback += f"- 3 {ing}s, chopped\n"
-            elif "garlic" in ing.lower():
-                fallback += f"- 4 cloves of {ing}, minced\n"
-            elif "onion" in ing.lower():
-                fallback += f"- 1 {ing}, finely chopped\n"
-            else:
-                fallback += f"- 1 cup {ing}\n"
-        
-        # Add common spices based on cuisine
-        if "Indian" in cuisine:
-            fallback += "- 1 tsp cumin seeds\n"
-            fallback += "- 1/2 tsp turmeric powder\n"
-            fallback += "- 1 tsp garam masala\n"
-            fallback += "- 1 tsp coriander powder\n"
-        elif "Italian" in cuisine:
-            fallback += "- 1 tsp dried oregano\n"
-            fallback += "- 1 tsp dried basil\n"
-            fallback += "- 1/2 tsp red pepper flakes (optional)\n"
-        elif "Mexican" in cuisine:
-            fallback += "- 1 tsp cumin powder\n"
-            fallback += "- 1 tsp chili powder\n"
-            fallback += "- 1 lime, juiced\n"
-        
-        fallback += "- 2 tbsp cooking oil\n"
-        fallback += "- Salt to taste\n"
-        
-        fallback += f"\n## Instructions\n"
-        
-        # Create more detailed, cuisine-specific instructions
-        if "Indian" in cuisine:
-            fallback += "1. Heat oil in a pan over medium heat.\n"
-            fallback += "2. Add cumin seeds and let them splutter.\n"
-            
-            if "garlic" in ingredients:
-                fallback += "3. Add minced garlic and sauté until golden brown.\n"
-                step = 4
-            else:
-                step = 3
-                
-            if "onion" in ingredients: 
-                fallback += f"{step}. Add chopped onions and sauté until translucent.\n"
-                step += 1
-            
-            if "tomato" in ingredients:
-                fallback += f"{step}. Add chopped tomatoes and cook until soft and oil separates.\n"
-                step += 1
-                
-            fallback += f"{step}. Add turmeric, coriander powder, and mix well.\n"
-            step += 1
-            
-            if "spinach" in ingredients:
-                fallback += f"{step}. Add spinach and cook until wilted, about 3-4 minutes.\n"
-                step += 1
-            
-            for ing in ingredient_list:
-                if ing.lower() not in ["spinach", "tomato", "garlic", "onion"]:
-                    fallback += f"{step}. Add {ing} and mix well.\n"
-                    step += 1
-            
-            fallback += f"{step}. Add salt to taste and garam masala.\n"
-            step += 1
-            fallback += f"{step}. Cover and simmer for 5 minutes on low heat.\n"
-            step += 1
-            fallback += f"{step}. Serve hot with rice or roti.\n"
-            
-        elif "Italian" in cuisine:
-            fallback += "1. Heat oil in a pan over medium heat.\n"
-            
-            if "garlic" in ingredients.lower():
-                fallback += "2. Add minced garlic and sauté until fragrant, about 30 seconds.\n"
-                step = 3
-            else:
-                step = 2
-            
-            if "onion" in ingredients.lower():
-                fallback += f"{step}. Add chopped onions and sauté until translucent.\n"
-                step += 1
-            
-            # Handle pasta differently
-            has_pasta = any("pasta" in ing.lower() for ing in ingredient_list)
-            
-            if has_pasta:
-                fallback += f"{step}. Bring a large pot of salted water to a boil for the pasta.\n"
-                step += 1
-            
-            if "mushroom" in ingredients.lower():
-                fallback += f"{step}. Add mushrooms and cook until they release their moisture and start to brown, about 5-7 minutes.\n"
-                step += 1
-                
-            if "bell pepper" in ingredients.lower() or "pepper" in ingredients.lower():
-                fallback += f"{step}. Add bell peppers and cook until slightly softened, about 3-4 minutes.\n"
-                step += 1
-            
-            if "tomato" in ingredients.lower():
-                fallback += f"{step}. Add chopped tomatoes, dried herbs, and cook for 5 minutes.\n"
-                step += 1
-            
-            if "spinach" in ingredients.lower():
-                fallback += f"{step}. Add spinach and cook until wilted, about 2 minutes.\n"
-                step += 1
-            
-            # Add other ingredients that aren't mentioned specifically
-            for ing in ingredient_list:
-                if not any(x in ing.lower() for x in ["spinach", "tomato", "garlic", "onion", "pasta", "olive oil", "mushroom", "bell pepper", "pepper"]):
-                    fallback += f"{step}. Add {ing} and cook for 3-4 minutes.\n"
-                    step += 1
-            
-            # Add olive oil if present
-            if "olive oil" in ingredients.lower():
-                fallback += f"{step}. Drizzle with olive oil.\n"
-                step += 1
-            
-            fallback += f"{step}. Season with salt, pepper, and dried herbs to taste.\n"
-            step += 1
-            
-            # Cook pasta if present
-            if has_pasta:
-                fallback += f"{step}. Cook pasta according to package instructions until al dente.\n"
-                step += 1
-                fallback += f"{step}. Drain pasta, reserving 1/4 cup of pasta water.\n"
-                step += 1
-                fallback += f"{step}. Add pasta to the sauce along with a splash of pasta water and toss to combine.\n"
-                step += 1
-            
-            fallback += f"{step}. Serve hot, optionally garnished with grated cheese for non-vegan option.\n"
-            
-        else:
-            fallback += "1. Heat oil in a pan over medium heat.\n"
-            
-            if "garlic" in ingredients:
-                fallback += "2. Add minced garlic and sauté until fragrant.\n"
-                step = 3
-            else:
-                step = 2
-                
-            if "onion" in ingredients:
-                fallback += f"{step}. Add chopped onions and sauté until translucent.\n"
-                step += 1
-            
-            if "tomato" in ingredients:
-                fallback += f"{step}. Add chopped tomatoes and cook for 5 minutes.\n"
-                step += 1
-            
-            for ing in ingredient_list:
-                if ing.lower() not in ["spinach", "tomato", "garlic", "onion"]:
-                    fallback += f"{step}. Add {ing} and cook for 3-4 minutes.\n"
-                    step += 1
-            
-            if "spinach" in ingredients:
-                fallback += f"{step}. Add spinach last and cook until wilted, about 2-3 minutes.\n"
-                step += 1
-            
-            fallback += f"{step}. Season to taste with salt and pepper.\n"
-            step += 1
-            fallback += f"{step}. Serve hot.\n"
-        
-        return fallback
-    
-    def save_recipe(self, recipe: str, filename: str):
-        """Save a generated recipe to a file"""
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(recipe)
-        print(f"Recipe saved to {filename}")
+try:
+    import requests
+except ImportError as exc:
+    raise SystemExit(
+        "Missing dependency 'requests'. Install with: pip install requests"
+    ) from exc
 
-# Example usage
+# Optional: scikit-learn for TF-IDF retrieval. We'll fall back gracefully if missing.
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+    from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+    _SKLEARN_AVAILABLE = True
+except Exception:
+    _SKLEARN_AVAILABLE = False
+
+
+OLLAMA_HOST_DEFAULT = "http://localhost:11434"
+OLLAMA_CHAT_ENDPOINT = "/api/chat"
+DEFAULT_MODEL = os.environ.get("LLAMA_MODEL", "llama3.1")
+
+
+def build_system_prompt() -> str:
+    return (
+        "You are a world-class culinary assistant and recipe developer. "
+        "Generate clear, complete, and executable recipes. "
+        "Always tailor the recipe to the provided ingredients, dietary preferences, and cuisine. "
+        "If something is missing, make reasonable assumptions and state them. "
+        "Use metric units with US conversions in parentheses where helpful. "
+        "Return well-structured sections: Title, Description, Ingredients (with amounts), Equipment, "
+        "Instructions (numbered steps), Timing, Serving Size, Variations/Substitutions, "
+        "Allergens, and Approximate Nutrition per serving."
+    )
+
+
+def build_user_prompt(
+    ingredients: List[str],
+    diet: Optional[str],
+    cuisine: Optional[str],
+    servings: Optional[int],
+    max_calories: Optional[int],
+    extra_tools: Optional[List[str]],
+    retrieved_context: Optional[str] = None,
+) -> str:
+    parts: List[str] = []
+    if retrieved_context:
+        parts.append("Reference context (retrieved snippets):\n" + retrieved_context.strip())
+        parts.append("")
+    parts.append("Please create a complete recipe with the following constraints:")
+    parts.append("")
+    parts.append(f"- Ingredients on hand: {', '.join(ingredients) if ingredients else 'user did not specify'}")
+    parts.append(f"- Dietary preference: {diet or 'none specified'}")
+    parts.append(f"- Cuisine style: {cuisine or 'chef\'s choice, but be consistent'}")
+    if servings:
+        parts.append(f"- Target servings: {servings}")
+    if max_calories:
+        parts.append(f"- Aim for ≤ {max_calories} kcal per serving")
+    if extra_tools:
+        parts.append(f"- Available equipment: {', '.join(extra_tools)}")
+    parts.append("")
+    parts.append(
+        "Constraints and style:"\
+        "\n- Prefer fresh, seasonal choices when possible"\
+        "\n- Avoid rare/expensive ingredients unless necessary"\
+        "\n- Provide substitutions if key items are missing"\
+        "\n- Include timing estimates per step and total time"\
+        "\n- Include food safety notes if applicable"
+    )
+    parts.append("")
+    parts.append(
+        "Output format (use clear headings):\n"
+        "Title\nDescription\nIngredients\nEquipment\nInstructions\nTiming\nServing Size\n"
+        "Variations and Substitutions\nAllergens\nApproximate Nutrition per serving"
+    )
+    return "\n".join(parts)
+
+
+# ----------------------------- RAG Utilities -----------------------------
+
+def _normalize_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _load_corpus(corpus_path: str) -> List[Dict[str, str]]:
+    """Load a corpus file. Supports CSV or TXT.
+
+    CSV heuristic: contains headers; we will try common recipe fields.
+    Returns a list of dicts with keys: 'text' and 'meta'.
+    """
+    if not os.path.exists(corpus_path):
+        raise SystemExit(f"Corpus file not found: {corpus_path}")
+
+    _, ext = os.path.splitext(corpus_path.lower())
+    documents: List[Dict[str, str]] = []
+
+    if ext in {".csv"}:
+        with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Try to build a useful text blob. Fall back to joining all fields.
+                possible_fields = [
+                    row.get("translatedRecipeName") or row.get("name") or row.get("title"),
+                    row.get("ingredients_list") or row.get("ingredients") or row.get("TranslatedIngredients") or row.get("cleaned_ingredients"),
+                    row.get("translatedRecipeInstructions") or row.get("instructions") or row.get("method"),
+                    row.get("cuisine") or row.get("region") or row.get("course"),
+                ]
+                fields_used = [v for v in possible_fields if v]
+                if not fields_used:
+                    # join any non-empty fields
+                    fields_used = [str(v) for v in row.values() if v]
+                combined = " | ".join(fields_used)
+                text_blob = combined.strip()
+                if not text_blob:
+                    continue
+                meta = row.get("translatedRecipeName") or row.get("name") or row.get("title") or "entry"
+                documents.append({"text": text_blob, "meta": str(meta)})
+    else:
+        # Treat as plain text; split by blank lines
+        with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        chunks = [c.strip() for c in re.split(r"\n\s*\n", content) if c.strip()]
+        for i, chunk in enumerate(chunks):
+            documents.append({"text": chunk, "meta": f"chunk_{i+1}"})
+
+    if not documents:
+        raise SystemExit("Corpus appears to be empty after loading.")
+    return documents
+
+
+def _retrieve_context(
+    query_text: str,
+    documents: List[Dict[str, str]],
+    top_k: int = 3,
+    max_context_chars: int = 1200,
+) -> Tuple[str, List[Tuple[str, float]]]:
+    """Retrieve top_k relevant snippets.
+
+    Returns a tuple: (context_block, [(meta, score), ...])
+    """
+    query = _normalize_text(query_text)
+    docs_text = [d["text"] for d in documents]
+
+    scores: List[float] = []
+    if _SKLEARN_AVAILABLE:
+        try:
+            vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 2))
+            matrix = vectorizer.fit_transform([_normalize_text(t) for t in docs_text + [query]])
+            doc_matrix = matrix[:-1]
+            q_vec = matrix[-1]
+            sims = cosine_similarity(doc_matrix, q_vec).ravel()
+            scores = sims.tolist()
+        except Exception:
+            # Fallback to Jaccard if vectorizer blows up
+            _sk_fallback = True
+            scores = []
+            query_tokens = set(query.split())
+            for t in docs_text:
+                tokens = set(_normalize_text(t).split())
+                inter = len(tokens & query_tokens)
+                union = len(tokens | query_tokens) or 1
+                scores.append(inter / union)
+    else:
+        # Simple Jaccard similarity
+        query_tokens = set(query.split())
+        for t in docs_text:
+            tokens = set(_normalize_text(t).split())
+            inter = len(tokens & query_tokens)
+            union = len(tokens | query_tokens) or 1
+            scores.append(inter / union)
+
+    ranked_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[: max(1, top_k)]
+    snippets: List[str] = []
+    meta_scores: List[Tuple[str, float]] = []
+    total_chars = 0
+    for i in ranked_idx:
+        snippet = documents[i]["text"].strip()
+        meta = documents[i]["meta"]
+        score = float(scores[i])
+        if not snippet:
+            continue
+        # Truncate each snippet to keep within max_context_chars total
+        remaining = max_context_chars - total_chars
+        if remaining <= 0:
+            break
+        snippet_trimmed = snippet[: max(200, min(remaining, 600))]
+        snippets.append(f"[Source: {meta}]\n{snippet_trimmed}")
+        meta_scores.append((meta, score))
+        total_chars += len(snippet_trimmed)
+
+    context_block = "\n\n".join(snippets)
+    return context_block, meta_scores
+
+
+def call_ollama_chat(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    host: str = OLLAMA_HOST_DEFAULT,
+    temperature: float = 0.7,
+    top_p: float = 0.95,
+    seed: Optional[int] = None,
+) -> str:
+    url = host.rstrip("/") + OLLAMA_CHAT_ENDPOINT
+    headers = {"Content-Type": "application/json"}
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": temperature, "top_p": top_p},
+    }
+    if seed is not None:
+        payload["options"]["seed"] = seed
+
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=240)
+    except requests.exceptions.ConnectionError as err:
+        raise SystemExit(
+            "Could not connect to Ollama at {}. Ensure Ollama is installed, running, and the model '{}' is pulled (e.g., 'ollama run {}').".format(
+                host, model, model
+            )
+        ) from err
+    except requests.exceptions.Timeout as err:
+        raise SystemExit("Request to Llama (Ollama) timed out. Try again or adjust inputs.") from err
+
+    if resp.status_code != 200:
+        raise SystemExit(
+            f"Ollama returned HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+
+    data = resp.json()
+    # Ollama chat returns { 'message': { 'content': '...' }, ... }
+    message = data.get("message", {})
+    content = message.get("content")
+    if not content:
+        # Some older/newer variants may return 'response'
+        content = data.get("response")
+    if not content:
+        raise SystemExit("No content returned by model.")
+    return content
+
+
+def write_output(text: str, out_path: Optional[str] = None) -> str:
+    if not out_path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(os.getcwd(), f"generated_recipe_llama_{timestamp}.txt")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return out_path
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate a recipe using a local Llama model via Ollama."
+    )
+    parser.add_argument(
+        "--ingredients",
+        type=str,
+        default="",
+        help="Comma-separated list of ingredients on hand",
+    )
+    parser.add_argument(
+        "--diet",
+        type=str,
+        default="",
+        help="Dietary preference (e.g., vegetarian, vegan, gluten-free)",
+    )
+    parser.add_argument(
+        "--cuisine",
+        type=str,
+        default="",
+        help="Cuisine style (e.g., Indian, Italian, Mexican)",
+    )
+    parser.add_argument(
+        "--servings",
+        type=int,
+        default=None,
+        help="Target number of servings",
+    )
+    parser.add_argument(
+        "--max_calories",
+        type=int,
+        default=None,
+        help="Aim for this many kcal per serving (approximate)",
+    )
+    parser.add_argument(
+        "--equipment",
+        type=str,
+        default="",
+        help="Comma-separated list of available equipment/tools",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"Ollama model name (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=os.environ.get("OLLAMA_HOST", OLLAMA_HOST_DEFAULT),
+        help=f"Ollama server host (default: {OLLAMA_HOST_DEFAULT})",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature",
+    )
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=0.95,
+        help="Nucleus sampling top_p",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for deterministic output (if supported)",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="",
+        help="Path to save the generated recipe (defaults to timestamped .txt)",
+    )
+    parser.add_argument(
+        "--rag",
+        action="store_true",
+        help="Enable retrieval-augmented generation (RAG) using a local corpus",
+    )
+    parser.add_argument(
+        "--corpus",
+        type=str,
+        default="",
+        help="Path to corpus file (CSV or TXT) to use for RAG",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=3,
+        help="Number of retrieved snippets to include",
+    )
+    parser.add_argument(
+        "--max_context_chars",
+        type=int,
+        default=1200,
+        help="Maximum total characters of retrieved context",
+    )
+
+    args = parser.parse_args(argv)
+    return args
+
+
+def interactive_fallback(args: argparse.Namespace) -> None:
+    if not args.ingredients:
+        args.ingredients = input("Enter ingredients (comma-separated): ").strip()
+    if not args.diet:
+        args.diet = input("Enter dietary preference (or leave blank): ").strip()
+    if not args.cuisine:
+        args.cuisine = input("Enter cuisine (or leave blank): ").strip()
+    if args.servings is None:
+        try:
+            sv = input("Target servings (leave blank to skip): ").strip()
+            args.servings = int(sv) if sv else None
+        except ValueError:
+            args.servings = None
+    if args.max_calories is None:
+        try:
+            kc = input("Max kcal per serving (leave blank to skip): ").strip()
+            args.max_calories = int(kc) if kc else None
+        except ValueError:
+            args.max_calories = None
+    if not args.equipment:
+        args.equipment = input("Available equipment/tools (comma-separated, optional): ").strip()
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv)
+
+    # If the three core inputs are not provided, prompt interactively
+    if not args.ingredients or not args.diet or not args.cuisine:
+        print("One or more required fields missing. Enter details interactively.")
+        interactive_fallback(args)
+
+    ingredients_list = [s.strip() for s in args.ingredients.split(",") if s.strip()]
+    equipment_list = [s.strip() for s in args.equipment.split(",") if s.strip()]
+
+    # Build a simple query string for retrieval
+    rag_context: Optional[str] = None
+    rag_sources: List[Tuple[str, float]] = []
+    if args.rag:
+        if not args.corpus:
+            print("RAG enabled but no --corpus provided; skipping retrieval.")
+        else:
+            try:
+                documents = _load_corpus(args.corpus)
+                query_pieces = [
+                    "ingredients: " + ", ".join(ingredients_list) if ingredients_list else "",
+                    f"diet: {args.diet}" if args.diet else "",
+                    f"cuisine: {args.cuisine}" if args.cuisine else "",
+                ]
+                query_text = " | ".join([p for p in query_pieces if p]) or "general cooking recipe"
+                rag_context, rag_sources = _retrieve_context(
+                    query_text=query_text,
+                    documents=documents,
+                    top_k=max(1, int(args.top_k or 3)),
+                    max_context_chars=max(300, int(args.max_context_chars or 1200)),
+                )
+            except SystemExit as e:
+                # Bubble up human-friendly errors
+                raise
+            except Exception as e:
+                print(f"RAG retrieval failed: {e}. Continuing without RAG.")
+                rag_context = None
+
+    system_prompt = build_system_prompt()
+    user_prompt = build_user_prompt(
+        ingredients=ingredients_list,
+        diet=args.diet or None,
+        cuisine=args.cuisine or None,
+        servings=args.servings,
+        max_calories=args.max_calories,
+        extra_tools=equipment_list if equipment_list else None,
+        retrieved_context=rag_context,
+    )
+
+    print(f"\nGenerating recipe with model '{args.model}' via {args.host}...\n")
+    content = call_ollama_chat(
+        model=args.model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        host=args.host,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
+    )
+
+    print(content)
+
+    if rag_sources:
+        # Print a brief reference list with scores
+        print("\nReferences (retrieved):")
+        for meta, score in rag_sources:
+            print(f"- {meta} (score={score:.3f})")
+
+    out_path = write_output(content, args.out or None)
+    if rag_sources:
+        try:
+            refs_path = os.path.splitext(out_path)[0] + "_refs.txt"
+            with open(refs_path, "w", encoding="utf-8") as rf:
+                rf.write("References (retrieved)\n")
+                for meta, score in rag_sources:
+                    rf.write(f"- {meta} (score={score:.3f})\n")
+            print(f"Saved references to: {refs_path}")
+        except Exception:
+            pass
+    print(f"\nSaved to: {out_path}")
+    return 0
+
+
 if __name__ == "__main__":
-    # Initialize RAG system
-    rag = RecipeRAG()
-    
-    # User inputs
-    dietary_pref = "Vegan"
-    ingredients = "spinach, tomato, garlic, chickpeas, coconut milk"
-    cuisine = "Indian"
-    
-    # Generate recipe
-    recipe = rag.generate(dietary_pref, ingredients, cuisine)
-    
-    print("\n" + "="*50 + "\n")
-    print("Generated Recipe:\n")
-    print(recipe)
-    print("\n" + "="*50 + "\n")
-    
-    # Save recipe
-    rag.save_recipe(recipe, "generated_recipe.txt") 
+    sys.exit(main())
+
+
+
