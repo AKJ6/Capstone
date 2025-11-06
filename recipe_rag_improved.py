@@ -48,13 +48,19 @@ def build_user_prompt(
     servings: Optional[int],
     max_calories: Optional[int],
     extra_tools: Optional[List[str]],
+    health_goals: Optional[str] = None,
+    recipe_name: Optional[str] = None,
     retrieved_context: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     if retrieved_context:
         parts.append("Reference context (retrieved snippets):\n" + retrieved_context.strip())
         parts.append("")
-    parts.append("Please create a complete recipe with the following constraints:")
+    # Instruction headline
+    if recipe_name:
+        parts.append(f"Please create a complete recipe for: {recipe_name}")
+    else:
+        parts.append("Please create a complete recipe with the following constraints:")
     parts.append("")
     parts.append(f"- Ingredients on hand: {', '.join(ingredients) if ingredients else 'user did not specify'}")
     parts.append(f"- Dietary preference: {diet or 'none specified'}")
@@ -63,6 +69,8 @@ def build_user_prompt(
         parts.append(f"- Target servings: {servings}")
     if max_calories:
         parts.append(f"- Aim for ≤ {max_calories} kcal per serving")
+    if health_goals:
+        parts.append(f"- Health goals to optimize for: {health_goals}")
     if extra_tools:
         parts.append(f"- Available equipment: {', '.join(extra_tools)}")
     parts.append("")
@@ -80,6 +88,109 @@ def build_user_prompt(
         "Title\nDescription\nIngredients\nEquipment\nInstructions\nTiming\nServing Size\n"
         "Variations and Substitutions\nAllergens\nApproximate Nutrition per serving"
     )
+    return "\n".join(parts)
+
+
+def build_personalization_prompt(
+    original_recipe: str,
+    dietary_preference: str,
+    ingredients: List[str],
+    cuisine: Optional[str],
+    servings: Optional[int],
+    max_calories: Optional[int],
+) -> str:
+    """Build a prompt to personalize an existing recipe based on dietary preference."""
+    parts: List[str] = []
+    parts.append("You are personalizing a recipe according to specific dietary preferences.")
+    parts.append("")
+    parts.append("Here is the original recipe:")
+    parts.append("=" * 60)
+    parts.append(original_recipe)
+    parts.append("=" * 60)
+    parts.append("")
+    parts.append(f"Please personalize this recipe to strictly comply with: {dietary_preference}")
+    parts.append("")
+    parts.append("Requirements for personalization:")
+    parts.append(f"- Dietary preference: {dietary_preference}")
+    parts.append(f"- Keep the same ingredients where possible: {', '.join(ingredients)}")
+    if cuisine:
+        parts.append(f"- Maintain the {cuisine} cuisine style")
+    if servings:
+        parts.append(f"- Maintain {servings} servings")
+    if max_calories:
+        parts.append(f"- Keep calories ≤ {max_calories} kcal per serving")
+    parts.append("")
+    parts.append("Modifications needed:")
+    parts.append("- Replace any non-compliant ingredients with suitable alternatives")
+    parts.append("- Adjust cooking methods if necessary to meet dietary requirements")
+    parts.append("- Update ingredient quantities to maintain flavor balance")
+    parts.append("- Ensure all allergens are properly noted")
+    parts.append("- Update nutrition information if calorie counts change")
+    parts.append("")
+    parts.append("Output the complete personalized recipe in the same format as the original:")
+    parts.append("Title\nDescription\nIngredients\nEquipment\nInstructions\nTiming\nServing Size\n")
+    parts.append("Variations and Substitutions\nAllergens\nApproximate Nutrition per serving")
+    parts.append("")
+    parts.append("Make sure the recipe is fully compliant with the dietary preference while maintaining")
+    parts.append("the essence and flavor profile of the original recipe.")
+    return "\n".join(parts)
+
+
+def build_health_goals_personalization_prompt(
+    original_recipe: str,
+    health_goals: str,
+    ingredients: List[str],
+    cuisine: Optional[str],
+    servings: Optional[int],
+    max_calories: Optional[int],
+) -> str:
+    """Build a prompt to personalize an existing recipe based on health goals."""
+    parts: List[str] = []
+    parts.append("You are personalizing a recipe to help achieve specific health goals.")
+    parts.append("")
+    parts.append("Here is the original recipe:")
+    parts.append("=" * 60)
+    parts.append(original_recipe)
+    parts.append("=" * 60)
+    parts.append("")
+    parts.append(f"Health Goals: {health_goals}")
+    parts.append("")
+    parts.append("Please modify this recipe to align with the following health goals:")
+    parts.append("")
+    parts.append("Requirements for personalization:")
+    parts.append(f"- Health goals: {health_goals}")
+    parts.append(f"- Keep the same base ingredients where possible: {', '.join(ingredients)}")
+    if cuisine:
+        parts.append(f"- Maintain the {cuisine} cuisine style")
+    if servings:
+        parts.append(f"- Maintain {servings} servings")
+    if max_calories:
+        parts.append(f"- Keep calories ≤ {max_calories} kcal per serving")
+    parts.append("")
+    parts.append("Common health goal modifications:")
+    parts.append("- Weight loss: Reduce calories, increase fiber, use lean proteins, reduce added sugars")
+    parts.append("- Muscle gain: Increase protein content, maintain balanced macronutrients")
+    parts.append("- Heart health: Reduce saturated fats, sodium, increase omega-3s, use whole grains")
+    parts.append("- Low sodium: Reduce or eliminate salt, use herbs and spices for flavor")
+    parts.append("- High protein: Increase protein sources, ensure adequate protein per serving")
+    parts.append("- Low carb/Keto: Reduce carbohydrates, increase healthy fats")
+    parts.append("- High fiber: Add whole grains, legumes, vegetables, fruits")
+    parts.append("- Energy boost: Include complex carbs, B vitamins, iron-rich foods")
+    parts.append("- Anti-inflammatory: Include omega-3s, antioxidants, turmeric, ginger")
+    parts.append("")
+    parts.append("Modifications needed:")
+    parts.append("- Adjust ingredient quantities to meet health goals")
+    parts.append("- Modify cooking methods if needed (e.g., baking instead of frying)")
+    parts.append("- Add or substitute ingredients that support the health goals")
+    parts.append("- Update nutrition information to reflect changes")
+    parts.append("- Provide suggestions for maximizing health benefits")
+    parts.append("")
+    parts.append("Output the complete personalized recipe in the same format as the original:")
+    parts.append("Title\nDescription\nIngredients\nEquipment\nInstructions\nTiming\nServing Size\n")
+    parts.append("Variations and Substitutions\nAllergens\nApproximate Nutrition per serving")
+    parts.append("")
+    parts.append("Make sure the recipe is optimized for the specified health goals while maintaining")
+    parts.append("the essence and flavor profile of the original recipe.")
     return "\n".join(parts)
 
 
@@ -263,7 +374,7 @@ def write_output(text: str, out_path: Optional[str] = None) -> str:
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a recipe using a local Llama model via Ollama."
+        description="Generate a recipe using a local Llama model via Ollama with personalization."
     )
     parser.add_argument(
         "--ingredients",
@@ -360,6 +471,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=1200,
         help="Maximum total characters of retrieved context",
     )
+    parser.add_argument(
+        "--skip_personalization",
+        action="store_true",
+        help="Skip the personalization step after initial recipe generation",
+    )
+    parser.add_argument(
+        "--health_goals",
+        type=str,
+        default="",
+        help="Health goals to optimize for (e.g., weight loss, high protein)",
+    )
+    parser.add_argument(
+        "--recipe_name",
+        type=str,
+        default="",
+        help="If provided, generate a recipe for this dish name",
+    )
 
     args = parser.parse_args(argv)
     return args
@@ -372,6 +500,8 @@ def interactive_fallback(args: argparse.Namespace) -> None:
         args.diet = input("Enter dietary preference (or leave blank): ").strip()
     if not args.cuisine:
         args.cuisine = input("Enter cuisine (or leave blank): ").strip()
+    if not getattr(args, "recipe_name", ""):
+        args.recipe_name = input("Enter a recipe name to generate (optional, e.g., 'Chicken Tikka Masala'): ").strip()
     if args.servings is None:
         try:
             sv = input("Target servings (leave blank to skip): ").strip()
@@ -386,18 +516,109 @@ def interactive_fallback(args: argparse.Namespace) -> None:
             args.max_calories = None
     if not args.equipment:
         args.equipment = input("Available equipment/tools (comma-separated, optional): ").strip()
+    if not getattr(args, "health_goals", ""):
+        args.health_goals = input("Health goals (optional, e.g., 'weight loss, heart health'): ").strip()
+
+
+def personalize_recipe(
+    original_recipe: str,
+    dietary_preference: str,
+    ingredients: List[str],
+    cuisine: Optional[str],
+    servings: Optional[int],
+    max_calories: Optional[int],
+    model: str,
+    host: str,
+    temperature: float,
+    top_p: float,
+    seed: Optional[int],
+) -> str:
+    """Personalize a recipe based on dietary preference."""
+    print(f"\n{'='*60}")
+    print("PERSONALIZING RECIPE")
+    print(f"{'='*60}")
+    print(f"Personalizing recipe for dietary preference: {dietary_preference}")
+    print(f"Generating personalized recipe with model '{model}'...\n")
+    
+    personalization_prompt = build_personalization_prompt(
+        original_recipe=original_recipe,
+        dietary_preference=dietary_preference,
+        ingredients=ingredients,
+        cuisine=cuisine,
+        servings=servings,
+        max_calories=max_calories,
+    )
+    
+    personalized_recipe = call_ollama_chat(
+        model=model,
+        system_prompt=build_system_prompt(),
+        user_prompt=personalization_prompt,
+        host=host,
+        temperature=temperature,
+        top_p=top_p,
+        seed=seed,
+    )
+    
+    return personalized_recipe
+
+
+def personalize_recipe_for_health_goals(
+    original_recipe: str,
+    health_goals: str,
+    ingredients: List[str],
+    cuisine: Optional[str],
+    servings: Optional[int],
+    max_calories: Optional[int],
+    model: str,
+    host: str,
+    temperature: float,
+    top_p: float,
+    seed: Optional[int],
+) -> str:
+    """Personalize a recipe based on health goals."""
+    print(f"\n{'='*60}")
+    print("PERSONALIZING RECIPE FOR HEALTH GOALS")
+    print(f"{'='*60}")
+    print(f"Personalizing recipe for health goals: {health_goals}")
+    print(f"Generating personalized recipe with model '{model}'...\n")
+    
+    health_goals_prompt = build_health_goals_personalization_prompt(
+        original_recipe=original_recipe,
+        health_goals=health_goals,
+        ingredients=ingredients,
+        cuisine=cuisine,
+        servings=servings,
+        max_calories=max_calories,
+    )
+    
+    personalized_recipe = call_ollama_chat(
+        model=model,
+        system_prompt=build_system_prompt(),
+        user_prompt=health_goals_prompt,
+        host=host,
+        temperature=temperature,
+        top_p=top_p,
+        seed=seed,
+    )
+    
+    return personalized_recipe
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
 
-    # If the three core inputs are not provided, prompt interactively
-    if not args.ingredients or not args.diet or not args.cuisine:
+    # If neither ingredients nor recipe_name are provided, prompt interactively
+    if not args.ingredients and not getattr(args, "recipe_name", ""):
         print("One or more required fields missing. Enter details interactively.")
         interactive_fallback(args)
 
     ingredients_list = [s.strip() for s in args.ingredients.split(",") if s.strip()]
     equipment_list = [s.strip() for s in args.equipment.split(",") if s.strip()]
+
+    # Auto-enable RAG if a corpus is provided but --rag not set
+    if getattr(args, "corpus", "") and not getattr(args, "rag", False):
+        print("Corpus provided without --rag; enabling RAG.")
+        args.rag = True  # type: ignore[attr-defined]
 
     # Build a simple query string for retrieval
     rag_context: Optional[str] = None
@@ -412,6 +633,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "ingredients: " + ", ".join(ingredients_list) if ingredients_list else "",
                     f"diet: {args.diet}" if args.diet else "",
                     f"cuisine: {args.cuisine}" if args.cuisine else "",
+                    f"health_goals: {args.health_goals}" if getattr(args, "health_goals", "") else "",
+                    f"recipe_name: {args.recipe_name}" if getattr(args, "recipe_name", "") else "",
                 ]
                 query_text = " | ".join([p for p in query_pieces if p]) or "general cooking recipe"
                 rag_context, rag_sources = _retrieve_context(
@@ -435,6 +658,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         servings=args.servings,
         max_calories=args.max_calories,
         extra_tools=equipment_list if equipment_list else None,
+        health_goals=(args.health_goals or None) if hasattr(args, "health_goals") else None,
+        recipe_name=(args.recipe_name or None) if hasattr(args, "recipe_name") else None,
         retrieved_context=rag_context,
     )
 
@@ -469,11 +694,102 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             pass
     print(f"\nSaved to: {out_path}")
+    
+    # Track the current recipe content for potential multiple personalizations
+    current_recipe = content
+    
+    # Personalization step - Dietary Preference
+    if not args.skip_personalization:
+        print(f"\n{'='*60}")
+        print("RECIPE PERSONALIZATION - DIETARY PREFERENCE")
+        print(f"{'='*60}")
+        print("\nWould you like to personalize this recipe based on a specific dietary preference?")
+        print("Examples: vegan, vegetarian, gluten-free, keto, paleo, halal, kosher, etc.")
+        
+        dietary_preference = input("\nEnter dietary preference (or press Enter to skip): ").strip()
+        
+        if dietary_preference:
+            try:
+                personalized_content = personalize_recipe(
+                    original_recipe=current_recipe,
+                    dietary_preference=dietary_preference,
+                    ingredients=ingredients_list,
+                    cuisine=args.cuisine or None,
+                    servings=args.servings,
+                    max_calories=args.max_calories,
+                    model=args.model,
+                    host=args.host,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    seed=args.seed,
+                )
+                
+                print("\n" + "="*60)
+                print("PERSONALIZED RECIPE (DIETARY PREFERENCE)")
+                print("="*60)
+                print(personalized_content)
+                
+                # Save personalized recipe
+                personalized_out_path = os.path.splitext(out_path)[0] + "_dietary_personalized.txt"
+                personalized_out_path = write_output(personalized_content, personalized_out_path)
+                print(f"\nSaved dietary personalized recipe to: {personalized_out_path}")
+                
+                # Update current recipe to the personalized version for health goals personalization
+                current_recipe = personalized_content
+                
+            except Exception as e:
+                print(f"\nError during dietary personalization: {e}")
+                print("Original recipe remains unchanged.")
+        else:
+            print("\nSkipping dietary preference personalization.")
+    
+    # Health Goals Personalization step
+    if not args.skip_personalization:
+        print(f"\n{'='*60}")
+        print("RECIPE PERSONALIZATION - HEALTH GOALS")
+        print(f"{'='*60}")
+        print("\nWould you like to personalize this recipe based on your health goals?")
+        print("Examples: weight loss, muscle gain, heart health, low sodium, high protein,")
+        print("         low carb, high fiber, energy boost, anti-inflammatory, etc.")
+        print("You can specify multiple goals separated by commas.")
+        
+        health_goals = input("\nEnter health goals (or press Enter to skip): ").strip()
+        
+        if health_goals:
+            try:
+                health_personalized_content = personalize_recipe_for_health_goals(
+                    original_recipe=current_recipe,
+                    health_goals=health_goals,
+                    ingredients=ingredients_list,
+                    cuisine=args.cuisine or None,
+                    servings=args.servings,
+                    max_calories=args.max_calories,
+                    model=args.model,
+                    host=args.host,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    seed=args.seed,
+                )
+                
+                print("\n" + "="*60)
+                print("PERSONALIZED RECIPE (HEALTH GOALS)")
+                print("="*60)
+                print(health_personalized_content)
+                
+                # Save health goals personalized recipe
+                health_out_path = os.path.splitext(out_path)[0] + "_health_goals_personalized.txt"
+                health_out_path = write_output(health_personalized_content, health_out_path)
+                print(f"\nSaved health goals personalized recipe to: {health_out_path}")
+                
+            except Exception as e:
+                print(f"\nError during health goals personalization: {e}")
+                print("Previous recipe version remains unchanged.")
+        else:
+            print("\nSkipping health goals personalization.")
+    
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
 
