@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Culinary Assistant</title>
+  <style>
+    body {
+      text-align: center;
+      font-family: "Poppins", sans-serif;
+      background: linear-gradient(to bottom right, #fff6f6, #ffe6cc);
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      color: #d35400;
+    }
+    button {
+      background-color: #d35400;
+      color: white;
+      padding: 12px 20px;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-top: 15px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    }
+    button:hover {
+      background-color: #e67e22;
+    }
+    video {
+      width: 90%;
+      max-width: 600px;
+      border-radius: 12px;
+      margin-top: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    }
+    #output {
+      margin-top: 20px;
+      font-size: 1.1rem;
+      white-space: pre-line;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎙️ Culinary Assistant</h1>
+  <button id="startBtn">Start Assistant</button>
+  <video id="camera" autoplay playsinline></video>
+  <p id="output">Click “Start Assistant” to begin.</p>
+
+  <script>
+    const startBtn = document.getElementById("startBtn");
+    const video = document.getElementById("camera");
+    const output = document.getElementById("output");
+
+    let recognition;
+    let listening = false;
+
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        output.innerText = "✅ Rear camera started.";
+      } catch (err) {
+        output.innerText = "❌ Camera access denied: " + err.message;
+      }
+    }
+
+    function speak(text) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.pitch = 1.0;
+      utterance.rate = 1.0;
+      utterance.volume = 1.0;
+      speechSynthesis.speak(utterance);
+    }
+
+    function initSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        output.innerText = "❌ Speech recognition not supported on this browser.";
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onresult = async (event) => {
+        const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase().trim();
+        console.log("Heard:", transcript);
+
+        if (transcript.includes("culinary assistant")) {
+          listening = true;
+          output.innerText = "🗣️ Wake word detected! Listening for your question...";
+          speak("Yes? How can I help?");
+        } 
+        else if (listening) {
+          listening = false;
+          const question = transcript;
+          output.innerText = `📡 Sending: "${question}"`;
+          speak("Got it. Let me check...");
+
+          // Capture frame
+          const canvas = document.createElement("canvas");
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          canvas.getContext("2d").drawImage(video, 0, 0);
+          const imageBase64 = canvas.toDataURL("image/jpeg");
+
+          // Send to backend (Gemini API endpoint)
+          const response = await fetch("/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, image: imageBase64 }),
+          });
+
+          const result = await response.json();
+          output.innerText = "💬 Gemini says:\n" + result.answer;
+          speak(result.answer);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        if (["no-speech", "aborted"].includes(event.error)) {
+          setTimeout(() => recognition.start(), 1000);
+        }
+      };
+
+      recognition.onend = () => {
+        setTimeout(() => recognition.start(), 1000);
+      };
+
+      recognition.start();
+      output.innerText = "🎧 Listening for 'Culinary Assistant'...";
+    }
+
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      startBtn.innerText = "Loading...";
+      await initCamera();
+      initSpeechRecognition();
+      startBtn.innerText = "Assistant Active ✅";
+      output.innerText = "🎧 Listening for 'Culinary Assistant'...";
+      speak("Culinary Assistant activated and ready.");
+    });
+  </script>
+</body>
+</html>
