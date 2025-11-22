@@ -6,7 +6,7 @@ import base64
 
 app = Flask(__name__)
 
-genai.configure(api_key="AIzaSyBMyTwJZKn5ARhTNGxUx8wv3bXPZKa8KYc")
+genai.configure(api_key="Put your API")
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 RECIPE = """
